@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
 
 using node_id_t = uint32_t;
 
@@ -69,7 +71,9 @@ inline uint64_t GPU_to_GPU_delay(uint64_t object_size){
 
 
 /** TODO: write a standalone scheduler for performance testing purposes. */
-std::string tide_scheduler(std::string entry_prefix, pre_adfg_t pre_adfg, std::vector<node_id_t> workers_set){
+std::string tide_scheduler(std::string entry_prefix, pre_adfg_t pre_adfg, std::vector<node_id_t> workers_set,
+                              std::unordered_map<node_id_t, uint64_t> worker_waittime, 
+                              std::unordered_map<node_id_t, std::vector<uint32_t>> worker_cached_models){
      // vertex pathname -> (node_id, finish_time(us))
      // in the algorithm denote task ~ vertex pathname
      std::unordered_map<std::string, std::tuple<node_id_t,uint64_t>> allocated_tasks_info;
@@ -101,12 +105,13 @@ std::string tide_scheduler(std::string entry_prefix, pre_adfg_t pre_adfg, std::v
           for(node_id_t cur_worker: workers_set){
                uint64_t cur_worker_waittime = 0;
                uint64_t model_fetch_time = 0;
-               cur_worker_waittime = cur_us; // this->check_queue_wait_time(cur_worker);
+               cur_worker_waittime = worker_waittime.at(cur_worker);
                bool models_in_cache;
                auto& required_models = std::get<1>(pre_adfg.at(pathname));
                auto& required_models_size = std::get<2>(pre_adfg.at(pathname));
                for(size_t idx = 0; idx < required_models.size(); idx ++){
-                    models_in_cache = 1; // this->check_if_model_in_gpu(cur_worker, required_models[idx]);
+                    auto& models = worker_cached_models.at(cur_worker);
+                    models_in_cache = std::find(models.begin(), models.end(), required_models[idx]) != worker_cached_models.at(cur_worker).end();
                     if(!models_in_cache){
                          /** TODO: current design assume host loaded all models at the beginning.
                           *        later can extend to remote_host_to_GPU, with the udl&model centraliezd store
@@ -149,11 +154,38 @@ std::string tide_scheduler(std::string entry_prefix, pre_adfg_t pre_adfg, std::v
      return allocated_machines;
 }
 
-int main(){
-     std::vector<node_id_t> workers_set{0, 1, 2, 3, 4, 5, 6, 7};
+int main(int argc, char** argv){
+     int num_workers = 5;
+     if(argc > 1){
+          num_workers = std::atoi(argv[1]);
+     }
+     int num_tasks = 5;
+     if(argc > 2){
+          num_tasks = std::atoi(argv[2]);
+     }
+     int hov = 1;
+     if(argc > 2){
+          hov = std::atoi(argv[2]);
+     }
+     std::vector<node_id_t> workers_set;
+     std::unordered_map<node_id_t, uint64_t> worker_waittime;
+     std::unordered_map<node_id_t, std::vector<uint32_t>> worker_cached_models;
+     uint64_t cur_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::high_resolution_clock::now().time_since_epoch())
+                              .count();
+     for(uint32_t i = 0; i < num_workers ; ++i){
+          workers_set.emplace_back(i);
+          worker_waittime.emplace(std::make_pair(i, cur_us + 10));
+          worker_cached_models.emplace(std::piecewise_construct, std::forward_as_tuple(i), std::forward_as_tuple(std::vector<uint32_t>({0, 1})));
+     }
+     
      pre_adfg_t pre_adfg;
      
-     std::vector<std::string> sorted_tasks({"task0", "task1", "task2", "task3"});
+     std::vector<std::string> sorted_tasks({"task0"});
+     for(int i = 0 ; i < num_tasks; ++ i){
+          sorted_tasks.emplace_back(std::string("task" + std::to_string(i)));
+     }
+     
      std::vector<uint32_t> required_models({0});
      std::vector<uint32_t> required_models_sizes({100});
      uint32_t output_size = 10;
@@ -161,25 +193,46 @@ int main(){
 
      std::set<std::string> task0_required_objects;
      pre_adfg.emplace(std::piecewise_construct, std::forward_as_tuple("task0"), std::forward_as_tuple(std::set<std::string>(), std::vector<uint32_t>({0}), 
-                    std::vector<uint32_t>({0}), std::vector<std::string>({"task0", "task1", "task2", "task3"}), 10, 10));
+                    std::vector<uint32_t>({0}), sorted_tasks, 10, 10));
+     
+     if(hov){
+          std::set<std::string> mid_tasks_required_objects({"task0"});
+          std::set<std::string> end_task_required_objects;
+          for(int i = 1 ; i < num_tasks - 1; ++i){
+               std::string task_name = "task" + std::to_string(i);
+               end_task_required_objects.emplace(task_name);
+               pre_adfg.emplace(std::piecewise_construct,std::forward_as_tuple(task_name), std::forward_as_tuple(mid_tasks_required_objects, required_models, required_models_sizes, sorted_tasks, 10, 10));
+          }
 
-     std::set<std::string> task1_required_objects({"task0"});
-     pre_adfg.emplace(std::piecewise_construct,std::forward_as_tuple("task1"), std::forward_as_tuple(task1_required_objects, required_models, required_models_sizes, sorted_tasks, 10, 10));
+          std::string end_task_name = "task" + std::to_string(num_tasks - 1);
+          pre_adfg.emplace(std::piecewise_construct,std::forward_as_tuple(end_task_name), std::forward_as_tuple(end_task_required_objects, required_models, required_models_sizes, sorted_tasks, 10, 10));
      
-     std::set<std::string> task2_required_objects({"task0"});
-     pre_adfg.emplace(std::piecewise_construct,std::forward_as_tuple("task2"), std::forward_as_tuple(task2_required_objects, required_models, required_models_sizes, sorted_tasks, 10, 10));
+     }else{
+          std::set<std::string> mid_tasks_required_objects({"task0"});
+          for(int i = 1 ; i < num_tasks; ++i){
+               std::string task_name = "task" + std::to_string(i);
+               pre_adfg.emplace(std::piecewise_construct,std::forward_as_tuple(task_name), std::forward_as_tuple(mid_tasks_required_objects, required_models, required_models_sizes, sorted_tasks, 10, 10));
+               mid_tasks_required_objects.clear();
+               mid_tasks_required_objects.emplace(task_name);
+          }
+     }
      
-     std::set<std::string> task3_required_objects({"task1", "task2"});
-     pre_adfg.emplace(std::piecewise_construct,std::forward_as_tuple("task3"), std::forward_as_tuple(task3_required_objects, required_models, required_models_sizes, sorted_tasks, 10, 10));
      
 
-     uint64_t before_scheduler_us = std::chrono::duration_cast<std::chrono::microseconds>(
+     uint64_t sum_times = 0;
+     uint64_t before_scheduler_us;
+     uint64_t after_scheduler_us;
+     for(int i = 0; i < 100; ++i){
+          before_scheduler_us = std::chrono::duration_cast<std::chrono::microseconds>(
                               std::chrono::high_resolution_clock::now().time_since_epoch())
                               .count();
-     tide_scheduler("task0", pre_adfg, workers_set);
-     uint64_t after_scheduler_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                              std::chrono::high_resolution_clock::now().time_since_epoch())
-                              .count();
-     std::cout << after_scheduler_us - before_scheduler_us << " us"<< std::endl;
+          tide_scheduler("task0", pre_adfg, workers_set, worker_waittime, worker_cached_models);
+          after_scheduler_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::high_resolution_clock::now().time_since_epoch())
+                                   .count();
+          sum_times += (after_scheduler_us - before_scheduler_us);
+     }
+     
+     std::cout << num_workers << "workers, " << "average runtime " << (sum_times / 100) << " us"<< std::endl;
      return 0;
 }
