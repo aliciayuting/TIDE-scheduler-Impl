@@ -142,7 +142,6 @@ std::string tide_scheduler(std::string entry_prefix, pre_adfg_t pre_adfg, std::v
           }
           auto it = std::min_element(workers_start_times.begin(), workers_start_times.end(),
                                                        [](const auto& l, const auto& r) { return l.second < r.second; });
-          /** TODO: TEST THIS!!! https://stackoverflow.com/questions/2659248/how-can-i-find-the-minimum-value-in-a-map */
           node_id_t selected_worker = it->second;
           uint64_t cur_task_finish_time = it->first + std::get<5>(pre_adfg.at(pathname));
           allocated_tasks_info.emplace(std::piecewise_construct, std::forward_as_tuple(pathname), std::forward_as_tuple(selected_worker, cur_task_finish_time));
