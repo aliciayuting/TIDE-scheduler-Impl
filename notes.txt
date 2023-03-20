@@ -1,0 +1,14 @@
+Notes to improve coding
+
+1. hov -> is_horizontal
+2. learn how to use data structures better
+   remove boilerplate code and make use of std functions
+   understand std::string
+3. Make use of information you already have
+   don't create names again when you already stored them
+4. Don't use parallel data structures, that is, multiple data structures that contain related information
+5. Don't duplicate information
+6. Be consistent with naming
+7. Don't use magic numbers
+8. Tuples are bad
+9. Don't use complicated constructs
