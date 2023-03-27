@@ -12,3 +12,8 @@ Notes to improve coding
 7. Don't use magic numbers
 8. Tuples are bad
 9. Don't use complicated constructs
+10. A variable should only exist in the scope it is needed
+11. Don't use state you don't need
+12. Use simpler loop constructs as much as possible
+    e.g., use a range-based for loop instead of an index-based
+13. Don't use expensive functions again and again
