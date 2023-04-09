@@ -175,49 +175,29 @@ std::string tide_scheduler(std::string entry_prefix, task_profile_t task_profile
         // 0. PRE-COMPUTE (used later by 2. case1) get the earliest start time, suppose all preq_tasks need to transfer data
         uint64_t earliest_start_time = cur_us;
         if(task_name == sorted_tasks[0]) {  // first task
-            /** TODO: assumming input_size=output_size, for finer-grained HEFT, use input size instead of output size*/
             earliest_start_time += host_to_GPU_delay(task.output_size);
-        }  // the worker_ids where pre-requisite tasks are executed
-        std::set<node_id_t> preq_workers;
-        for(auto& preq_task_name : task.dependencies) {
-            auto& preq_task = task_profile.at(preq_task_name);
-            /** TODO: std::tuple<node_id_t,uint64_t>& of allocated_tasks_info.at(preq_task)  */
-            auto& info = allocated_tasks_info.at(preq_task_name);
-            preq_workers.emplace(info.first);
-            uint64_t arrival_time = info.second + GPU_to_GPU_delay(preq_task.output_size);
-            earliest_start_time = std::max(earliest_start_time, arrival_time);
-        }
+        }  
         std::unordered_map<node_id_t, uint64_t> workers_start_times;
         for(const worker& worker : workers) {
+            // should i cache this instead of recomputing it for every worker?
+            for(auto& preq_task_name : task.dependencies) {
+                auto& preq_task = task_profile.at(preq_task_name);
+                auto& info = allocated_tasks_info.at(preq_task_name);
+                uint64_t arrival_time = info.second;
+                if(worker.id != info.first){ 
+                    arrival_time += GPU_to_GPU_delay(preq_task.output_size);  
+                }
+                earliest_start_time = std::max(earliest_start_time, arrival_time);
+            }
             uint64_t model_fetch_time = 0;
             auto& required_models = task.models;
             auto& model_ids = worker.cached_model_ids;
             for(model& required_model : required_models) {
                 if(std::find(model_ids.begin(), model_ids.end(), required_model.id) == model_ids.end()) {
-                    /** TODO: current design assume host loaded all models at the beginning.
-		     * later can extend to remote_host_to_GPU, with the udl&model centraliezd store */
                     model_fetch_time += host_to_GPU_delay(required_model.size);
                 }
             }
-            /** case 2.1 worker is not the same worker as any of the pre-req tasks'
-              * input fetching/sending is not blocked by waiting queue, whereas model fetching is */
-            uint64_t start_time;
-            if(preq_workers.find(worker.id) == preq_workers.end()) {
-                start_time = std::max(earliest_start_time, cur_us + worker.wait_time + model_fetch_time);
-            } else {  //case 2.2 cur_worker is on the same node of one of the pre-req tasks
-                uint64_t preq_arrival_time = 0;
-                for(auto& preq_task_name : task.dependencies) {
-		  auto& info = allocated_tasks_info.at(preq_task_name);
-                    node_id_t& preq_worker = info.first;
-                    uint64_t& preq_finish_time = info.second;
-                    if(worker.id == preq_worker) {
-                        preq_arrival_time = std::max(preq_arrival_time, preq_finish_time);
-                    } else {
-                        preq_arrival_time = std::max(preq_arrival_time, preq_finish_time + GPU_to_GPU_delay(task.output_size));
-                        start_time = std::max(preq_arrival_time, cur_us + worker.wait_time + model_fetch_time);
-                    }
-                }
-            }
+            uint64_t start_time = std::max(earliest_start_time, cur_us + worker.wait_time + model_fetch_time);
             workers_start_times.emplace(worker.id, start_time);
         }
         auto it = std::min_element(workers_start_times.begin(), workers_start_times.end(),
