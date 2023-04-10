@@ -112,6 +112,7 @@ int main(int argc, char** argv) {
 
     std::cout << num_workers << "workers, "
               << "average runtime " << (sum_times / 100.0) << " us" << std::endl;
+
     return 0;
 }
 
@@ -164,12 +165,15 @@ inline uint64_t GPU_to_GPU_delay(uint64_t object_size) {
     return localgpu_to_localcpu_delay + cpu_to_cpu_delay + remotecpu_to_remotegpu_delay;
 }
 
-/** TODO: write a standalone scheduler for performance testing purposes. */
 std::string tide_scheduler(std::string entry_prefix, task_profile_t task_profile, std::vector<std::string> sorted_tasks, const std::vector<worker>& workers) {
     // vertex pathname -> (node_id, finish_time(us))
     // in the algorithm denote task ~ vertex pathname
     std::unordered_map<std::string, std::pair<node_id_t, uint64_t>> allocated_tasks_info;
     uint64_t cur_us = time_since_epoch();
+    std::unordered_map<node_id_t, uint64_t> earliest_available_time;
+    for(const worker& worker : workers) {
+      earliest_available_time[worker.id] = cur_us + worker.wait_time;
+    }
     for(auto& task_name : sorted_tasks) {
         auto& task = task_profile.at(task_name);
         // 0. PRE-COMPUTE (used later by 2. case1) get the earliest start time, suppose all preq_tasks need to transfer data
@@ -177,7 +181,8 @@ std::string tide_scheduler(std::string entry_prefix, task_profile_t task_profile
         if(task_name == sorted_tasks[0]) {  // first task
             earliest_start_time += host_to_GPU_delay(task.output_size);
         }  
-        std::unordered_map<node_id_t, uint64_t> workers_start_times;
+	node_id_t selected_worker_id = -1;
+	uint64_t min_start_time = UINT64_MAX;
         for(const worker& worker : workers) {
             // should i cache this instead of recomputing it for every worker?
             for(auto& preq_task_name : task.dependencies) {
@@ -197,18 +202,18 @@ std::string tide_scheduler(std::string entry_prefix, task_profile_t task_profile
                     model_fetch_time += host_to_GPU_delay(required_model.size);
                 }
             }
-            uint64_t start_time = std::max(earliest_start_time, cur_us + worker.wait_time + model_fetch_time);
-            workers_start_times.emplace(worker.id, start_time);
+            uint64_t start_time = std::max(earliest_available_time[worker.id], earliest_start_time) + model_fetch_time;
+	    if(start_time < min_start_time) {
+	      min_start_time = start_time;
+	      selected_worker_id = worker.id;
+	    }
         }
-        auto it = std::min_element(workers_start_times.begin(), workers_start_times.end(),
-                                   [](const auto& l, const auto& r) { return l.second < r.second; });
-        node_id_t selected_worker = it->second;
-        uint64_t cur_task_finish_time = it->first + task.exec_time;
-        allocated_tasks_info.emplace(std::piecewise_construct, std::forward_as_tuple(task_name), std::forward_as_tuple(selected_worker, cur_task_finish_time));
+        allocated_tasks_info[task_name] = {selected_worker_id, min_start_time + task.exec_time};
+	earliest_available_time[selected_worker_id] = min_start_time + task.exec_time;
     }
     std::string allocated_machines;
     for(auto& task_name : sorted_tasks) {
-        allocated_machines += std::to_string(allocated_tasks_info.at(task_name).second) + ",";
+        allocated_machines += std::to_string(allocated_tasks_info.at(task_name).first) + ",";
     }
     return allocated_machines;
 }
